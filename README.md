@@ -1,3 +1,13 @@
+# About this fork
+
+ * Uses http.Handler instead of httprouter.Handle for endspoints.
+ * Built in middleware (func(http.Handler)http.Handler) global and per handler support (using closure) e.g. GET(path,middleware..)(handler)
+ * Uses map[string]string instead of httprouter.Params.
+ * Uses golang.org/x/net/context.Context package to store per request variables (parameters) using the Gorilla Context technique to use idiomatic http.Handler (mutex synced global map[*http.Request]context.Context scoped to set/unset at Router.ServeHTTP)
+ * Updated tests
+
+ TODO: Add tests for newly added
+
 # HttpRouter [![Build Status](https://travis-ci.org/julienschmidt/httprouter.png?branch=master)](https://travis-ci.org/julienschmidt/httprouter) [![Coverage](http://gocover.io/_badge/github.com/julienschmidt/httprouter?0)](http://gocover.io/github.com/julienschmidt/httprouter) [![GoDoc](http://godoc.org/github.com/julienschmidt/httprouter?status.png)](http://godoc.org/github.com/julienschmidt/httprouter)
 
 HttpRouter is a lightweight high performance HTTP request router

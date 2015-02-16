@@ -78,39 +78,23 @@ package httprouter
 
 import (
 	"net/http"
+	"time"
+
+	"golang.org/x/net/context"
 )
 
 // Handle is a function that can be registered to a route to handle HTTP
 // requests. Like http.HandlerFunc, but has a third parameter for the values of
 // wildcards (variables).
-type Handle func(http.ResponseWriter, *http.Request, Params)
-
-// Param is a single URL parameter, consisting of a key and a value.
-type Param struct {
-	Key   string
-	Value string
-}
-
-// Params is a Param-slice, as returned by the router.
-// The slice is ordered, the first URL parameter is also the first slice value.
-// It is therefore safe to read values by the index.
-type Params []Param
-
-// ByName returns the value of the first Param which key matches the given name.
-// If no matching Param is found, an empty string is returned.
-func (ps Params) ByName(name string) string {
-	for i := range ps {
-		if ps[i].Key == name {
-			return ps[i].Value
-		}
-	}
-	return ""
-}
+type Handle func(http.ResponseWriter, *http.Request, context.Context)
 
 // Router is a http.Handler which can be used to dispatch requests to different
 // handler functions via configurable routes
 type Router struct {
 	trees map[string]*node
+
+	Timeout    time.Duration
+	middleware *Middleware
 
 	// Enables automatic redirection if the current route can't be matched but a
 	// handler for the path with (without) the trailing slash exists.
@@ -162,40 +146,46 @@ var _ http.Handler = New()
 // Path auto-correction, including trailing slashes, is enabled by default.
 func New() *Router {
 	return &Router{
+		Timeout:                time.Duration(0),
+		middleware:             &Middleware{},
 		RedirectTrailingSlash:  true,
 		RedirectFixedPath:      true,
 		HandleMethodNotAllowed: true,
 	}
 }
 
+func (r *Router) Use(middleware ...func(http.Handler) http.Handler) {
+	r.middleware.Use(middleware...)
+}
+
 // GET is a shortcut for router.Handle("GET", path, handle)
-func (r *Router) GET(path string, handle Handle) {
-	r.Handle("GET", path, handle)
+func (r *Router) GET(path string, middleware ...func(http.Handler) http.Handler) func(http.HandlerFunc) {
+	return r.Handle("GET", path, middleware...)
 }
 
 // HEAD is a shortcut for router.Handle("HEAD", path, handle)
-func (r *Router) HEAD(path string, handle Handle) {
-	r.Handle("HEAD", path, handle)
+func (r *Router) HEAD(path string, middleware ...func(http.Handler) http.Handler) func(http.HandlerFunc) {
+	return r.Handle("HEAD", path, middleware...)
 }
 
 // POST is a shortcut for router.Handle("POST", path, handle)
-func (r *Router) POST(path string, handle Handle) {
-	r.Handle("POST", path, handle)
+func (r *Router) POST(path string, middleware ...func(http.Handler) http.Handler) func(http.HandlerFunc) {
+	return r.Handle("POST", path, middleware...)
 }
 
 // PUT is a shortcut for router.Handle("PUT", path, handle)
-func (r *Router) PUT(path string, handle Handle) {
-	r.Handle("PUT", path, handle)
+func (r *Router) PUT(path string, middleware ...func(http.Handler) http.Handler) func(http.HandlerFunc) {
+	return r.Handle("PUT", path, middleware...)
 }
 
 // PATCH is a shortcut for router.Handle("PATCH", path, handle)
-func (r *Router) PATCH(path string, handle Handle) {
-	r.Handle("PATCH", path, handle)
+func (r *Router) PATCH(path string, middleware ...func(http.Handler) http.Handler) func(http.HandlerFunc) {
+	return r.Handle("PATCH", path, middleware...)
 }
 
 // DELETE is a shortcut for router.Handle("DELETE", path, handle)
-func (r *Router) DELETE(path string, handle Handle) {
-	r.Handle("DELETE", path, handle)
+func (r *Router) DELETE(path string, middleware ...func(http.Handler) http.Handler) func(http.HandlerFunc) {
+	return r.Handle("DELETE", path, middleware...)
 }
 
 // Handle registers a new request handle with the given path and method.
@@ -206,42 +196,52 @@ func (r *Router) DELETE(path string, handle Handle) {
 // This function is intended for bulk loading and to allow the usage of less
 // frequently used, non-standardized or custom methods (e.g. for internal
 // communication with a proxy).
-func (r *Router) Handle(method, path string, handle Handle) {
-	if path[0] != '/' {
-		panic("path must begin with '/'")
-	}
+func (r *Router) Handle(method, path string, middleware ...func(http.Handler) http.Handler) func(http.HandlerFunc) {
+	return func(handle http.HandlerFunc) {
+		if path[0] != '/' {
+			panic("path must begin with '/'")
+		}
+		if r.trees == nil {
+			r.trees = make(map[string]*node)
+		}
+		root := r.trees[method]
+		if root == nil {
+			root = new(node)
+			r.trees[method] = root
+		}
 
-	if r.trees == nil {
-		r.trees = make(map[string]*node)
+		root.addRoute(path, NewMiddleware(middleware...).Then(handle))
 	}
-
-	root := r.trees[method]
-	if root == nil {
-		root = new(node)
-		r.trees[method] = root
-	}
-
-	root.addRoute(path, handle)
 }
 
 // Handler is an adapter which allows the usage of an http.Handler as a
 // request handle.
-func (r *Router) Handler(method, path string, handler http.Handler) {
-	r.Handle(method, path,
-		func(w http.ResponseWriter, req *http.Request, _ Params) {
-			handler.ServeHTTP(w, req)
-		},
-	)
+func (r *Router) Handler(method, path string, middleware ...func(http.Handler) http.Handler) func(http.Handler) {
+	return func(handle http.Handler) {
+		if path[0] != '/' {
+			panic("path must begin with '/'")
+		}
+
+		if r.trees == nil {
+			r.trees = make(map[string]*node)
+		}
+
+		root := r.trees[method]
+		if root == nil {
+			root = new(node)
+			r.trees[method] = root
+		}
+
+		root.addRoute(path, NewMiddleware(middleware...).Then(handle))
+	}
 }
 
 // HandlerFunc is an adapter which allows the usage of an http.HandlerFunc as a
 // request handle.
-func (r *Router) HandlerFunc(method, path string, handler http.HandlerFunc) {
-	r.Handle(method, path,
-		func(w http.ResponseWriter, req *http.Request, _ Params) {
-			handler(w, req)
-		},
-	)
+func (r *Router) HandlerFunc(method, path string, middleware ...func(http.Handler) http.Handler) func(http.HandlerFunc) {
+	return func(handler http.HandlerFunc) {
+		r.Handle(method, path, middleware...)(handler)
+	}
 }
 
 // ServeFiles serves files from the given file system root.
@@ -254,15 +254,17 @@ func (r *Router) HandlerFunc(method, path string, handler http.HandlerFunc) {
 // To use the operating system's file system implementation,
 // use http.Dir:
 //     router.ServeFiles("/src/*filepath", http.Dir("/var/www"))
-func (r *Router) ServeFiles(path string, root http.FileSystem) {
+func (r *Router) ServeFiles(path string, root http.FileSystem, middleware ...func(http.Handler) http.Handler) {
 	if len(path) < 10 || path[len(path)-10:] != "/*filepath" {
 		panic("path must end with /*filepath")
 	}
 
 	fileServer := http.FileServer(root)
 
-	r.GET(path, func(w http.ResponseWriter, req *http.Request, ps Params) {
-		req.URL.Path = ps.ByName("filepath")
+	r.GET(path, middleware...)(func(w http.ResponseWriter, req *http.Request) {
+		ctx := Context(req)
+		ps := ctx.Value("params").(map[string]string)
+		req.URL.Path = ps["filepath"]
 		fileServer.ServeHTTP(w, req)
 	})
 }
@@ -278,7 +280,7 @@ func (r *Router) recv(w http.ResponseWriter, req *http.Request) {
 // If the path was found, it returns the handle function and the path parameter
 // values. Otherwise the third return value indicates whether a redirection to
 // the same path with an extra / without the trailing slash should be performed.
-func (r *Router) Lookup(method, path string) (Handle, Params, bool) {
+func (r *Router) Lookup(method, path string) (http.Handler, map[string]string, bool) {
 	if root := r.trees[method]; root != nil {
 		return root.getValue(path)
 	}
@@ -295,7 +297,21 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		path := req.URL.Path
 
 		if handle, ps, tsr := root.getValue(path); handle != nil {
-			handle(w, req, ps)
+			var cancel context.CancelFunc
+			ctx := context.WithValue(context.Background(), "params", ps)
+			if int64(r.Timeout) > 0 {
+				ctx, cancel = context.WithTimeout(ctx, r.Timeout)
+			}
+			SetContext(req, ctx)
+			if len(*r.middleware) == 0 {
+				handle.ServeHTTP(w, req)
+			} else {
+				(*r.middleware).Then(handle).ServeHTTP(w, req)
+			}
+			if cancel != nil {
+				cancel()
+			}
+			unsetContext(req)
 			return
 		} else if req.Method != "CONNECT" && path != "/" {
 			code := 301 // Permanent redirect, request with GET method
@@ -355,8 +371,8 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 	// Handle 404
 	if r.NotFound != nil {
-		r.NotFound(w, req)
+		(r.middleware).ThenFunc(r.NotFound).ServeHTTP(w, req)
 	} else {
-		http.NotFound(w, req)
+		(r.middleware).ThenFunc(http.NotFound).ServeHTTP(w, req)
 	}
 }
