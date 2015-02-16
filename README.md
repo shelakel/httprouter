@@ -1,10 +1,12 @@
 # About this fork
 
- * Uses http.Handler instead of httprouter.Handle for endspoints.
+ * Uses http.Handler instead of httprouter.Handle for endpoints.
  * Built in middleware (func(http.Handler)http.Handler) global and per handler support (using closure) e.g. GET(path,middleware..)(handler)
  * Uses map[string]string instead of httprouter.Params.
- * Uses golang.org/x/net/context.Context package to store per request variables (parameters) using the Gorilla Context technique to use idiomatic http.Handler (mutex synced global map[*http.Request]context.Context scoped to set/unset at Router.ServeHTTP)
+ * Uses golang.org/x/net/context.Context package to store per request variables (parameters) using the Gorilla Context technique to use idiomatic http.Handler
  * Updated tests
+
+ Context: mutex synced global map[*http.Request]context.Context scoped to set/unset at Router.ServeHTTP
 
  TODO: Add tests for newly added
 
