@@ -85,15 +85,17 @@ import (
 //-----------------------------------------------
 
 func GorillaSetParams(r *http.Request, params map[string]string) {
-	// default implementation requires that nil params unassociate the parameters with the request
-	if params == nil {
-		gorillaContext.Clear(r)
-		return
-	}
 	gorillaContext.Set(r, "params", params)
 }
 
+var GorillaUnsetParams = gorillaContext.Clear
+
 func GorillaParams(r *http.Request) map[string]string {
+	// default implementation returns nil when no parameters are associated with the request
+	// or the request is nil
+    if r == nil {
+        return nil
+    }
 	var ps interface{}
 	var ok bool
 	var params map[string]string
@@ -102,7 +104,7 @@ func GorillaParams(r *http.Request) map[string]string {
 			return params
 		}
 	}
-	return nil // default implementation returns nil when no parameters are associated with the request
+	return nil
 }
 
 //-----------------------------------------------
@@ -182,6 +184,7 @@ func Hello(w http.ResponseWriter, r *http.Request) {
 func useGorillaContext(router *httprouter.Router) {
 	// example: replace the built-in functions with custom store for parameters
 	httprouter.SetParams = GorillaSetParams
+	httprouter.UnsetParams = GorillaUnsetParams
 	httprouter.Params = GorillaParams
 }
 

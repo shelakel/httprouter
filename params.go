@@ -11,38 +11,37 @@ var ErrRequestNil = fmt.Errorf("*http.Request is nil")
 var paramsMap = make(map[*http.Request]map[string]string, 0)
 var paramsLock = new(sync.Mutex)
 
-// SetParams associates parameters with a request. Passing nil should unassociate parameters with a request.
-//
-// Passing an empty request will panic.
+// SetParams associates parameters with a request.
 var SetParams = defaultSetParams
 
-// Params gets the parameters associated with the request. Returns nil if no parameters are associated with the request.
-//
-// Passing an empty request will panic.
+// UnsetParams unassociates parameters with a request.
+var UnsetParams = defaultUnsetParams
+
+// Params gets the parameters associated with the request. Returns nil if no parameters are associated with the request or the request is nil.
 var Params = defaultParams
 
-// ResetParams resets SetParams and Params to the built-in functions.
+// ResetParams resets SetParams, UnsetParams and Params to the built-in functions.
 func ResetParams() {
 	SetParams = defaultSetParams
+	UnsetParams = defaultUnsetParams
 	Params = defaultParams
 }
 
 func defaultSetParams(r *http.Request, params map[string]string) {
-	if r == nil {
-		panic(ErrRequestNil)
-	}
 	paramsLock.Lock()
-	if params != nil {
-		paramsMap[r] = params
-	} else {
-		delete(paramsMap, r)
-	}
+	paramsMap[r] = params
+	paramsLock.Unlock()
+}
+
+func defaultUnsetParams(r *http.Request) {
+	paramsLock.Lock()
+	delete(paramsMap, r)
 	paramsLock.Unlock()
 }
 
 func defaultParams(r *http.Request) map[string]string {
 	if r == nil {
-		panic(ErrRequestNil)
+		return nil
 	}
 	paramsLock.Lock()
 	if params, ok := paramsMap[r]; ok {
@@ -55,6 +54,6 @@ func defaultParams(r *http.Request) map[string]string {
 
 func defaultInitializer(w http.ResponseWriter, r *http.Request, params map[string]string, next http.Handler) {
 	SetParams(r, params)
-	defer SetParams(r, nil)
+	defer UnsetParams(r)
 	next.ServeHTTP(w, r)
 }
