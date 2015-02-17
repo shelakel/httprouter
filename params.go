@@ -11,7 +11,7 @@ var ErrRequestNil = fmt.Errorf("*http.Request is nil")
 var paramsMap = make(map[*http.Request]map[string]string, 0)
 var paramsLock = new(sync.Mutex)
 
-// SetParams associates parameters with a request. Pass nil to unassociate params with the request.
+// SetParams associates parameters with a request. Passing nil should unassociate parameters with a request.
 //
 // Passing an empty request will panic.
 var SetParams = defaultSetParams
@@ -53,7 +53,7 @@ func defaultParams(r *http.Request) map[string]string {
 	return nil
 }
 
-func defaultHandler(w http.ResponseWriter, r *http.Request, params map[string]string, next http.Handler) {
+func defaultInitializer(w http.ResponseWriter, r *http.Request, params map[string]string, next http.Handler) {
 	SetParams(r, params)
 	defer SetParams(r, nil)
 	next.ServeHTTP(w, r)

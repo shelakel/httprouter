@@ -83,7 +83,7 @@ import "net/http"
 type Router struct {
 	trees      map[string]*node
 	middleware *Middleware
-	handler    func(w http.ResponseWriter, r *http.Request, params map[string]string, next http.Handler)
+	initialize func(w http.ResponseWriter, r *http.Request, params map[string]string, next http.Handler)
 
 	// Enables automatic redirection if the current route can't be matched but a
 	// handler for the path with (without) the trailing slash exists.
@@ -128,13 +128,6 @@ type Router struct {
 	PanicHandler func(http.ResponseWriter, *http.Request, interface{})
 }
 
-func (r *Router) SetHandler(handler func(w http.ResponseWriter, r *http.Request, params map[string]string, next http.Handler)) {
-	if handler == nil {
-		handler = defaultHandler
-	}
-	r.handler = handler
-}
-
 // Make sure the Router conforms with the http.Handler interface
 var _ http.Handler = New()
 
@@ -143,13 +136,24 @@ var _ http.Handler = New()
 func New() *Router {
 	return &Router{
 		middleware:             &Middleware{},
-		handler:                defaultHandler,
+		initialize:             defaultInitializer,
 		RedirectTrailingSlash:  true,
 		RedirectFixedPath:      true,
 		HandleMethodNotAllowed: true,
 	}
 }
 
+// SetInitializer sets initializer middleware to associate parameters with a request.
+//
+// Passing nil will cause the Router to use the built-in initializer.
+func (r *Router) SetInitializer(initialize func(w http.ResponseWriter, r *http.Request, params map[string]string, next http.Handler)) {
+	if initialize == nil {
+		initialize = defaultInitializer
+	}
+	r.initialize = initialize
+}
+
+// Use adds one or more middleware functions to be executed before any route.
 func (r *Router) Use(middleware ...func(http.Handler) http.Handler) {
 	r.middleware.Use(middleware...)
 }
@@ -294,7 +298,7 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			if len(*r.middleware) > 0 {
 				next = r.middleware.Then(next)
 			}
-			r.handler(w, req, ps, next)
+			r.initialize(w, req, ps, next)
 			return
 		} else if req.Method != "CONNECT" && path != "/" {
 			code := 301 // Permanent redirect, request with GET method
