@@ -8,6 +8,8 @@
 
  TODO: Add tests for newly added
 
+ NOTE: Last named parameter wins i.e. params[name] = value, the current httprouter.Params uses an array and returns the first parameter matching the name when calling params.ByName(name).
+
 # HttpRouter [![Build Status](https://travis-ci.org/julienschmidt/httprouter.png?branch=master)](https://travis-ci.org/julienschmidt/httprouter) [![Coverage](http://gocover.io/_badge/github.com/julienschmidt/httprouter?0)](http://gocover.io/github.com/julienschmidt/httprouter) [![GoDoc](http://godoc.org/github.com/julienschmidt/httprouter?status.png)](http://godoc.org/github.com/julienschmidt/httprouter)
 
 HttpRouter is a lightweight high performance HTTP request router
@@ -59,7 +61,7 @@ PanicHandler log what happened and deliver a nice error page.
 
 Of course you can also set **custom [NotFound](http://godoc.org/github.com/julienschmidt/httprouter#Router.NotFound) and  [MethodNotAllowed](http://godoc.org/github.com/julienschmidt/httprouter#Router.MethodNotAllowed) handlers** and [**serve static files**](http://godoc.org/github.com/julienschmidt/httprouter#Router.ServeFiles).
 
-## Usage
+## Usage (updated to reflect changes to fork)
 This is just a quick introduction, view the [GoDoc](http://godoc.org/github.com/julienschmidt/httprouter) for details.
 
 Let's start with a trivial example:
@@ -67,26 +69,139 @@ Let's start with a trivial example:
 package main
 
 import (
-    "fmt"
-    "github.com/julienschmidt/httprouter"
-    "net/http"
-    "log"
+	"fmt"
+	"log"
+	"net/http"
+	"sync"
+	"time"
+
+	gorillaContext "github.com/gorilla/context"
+	"github.com/shelakel/httprouter"
+	netContext "golang.org/x/net/context"
 )
 
-func Index(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
-    fmt.Fprint(w, "Welcome!\n")
+//-----------------------------------------------
+// Custom initializer example - gorilla/context
+//-----------------------------------------------
+
+func GorillaSetParams(r *http.Request, params map[string]string) {
+	// default implementation requires that nil params unassociate the parameters with the request
+	if params == nil {
+		gorillaContext.Clear(r)
+		return
+	}
+	gorillaContext.Set(r, "params", params)
 }
 
-func Hello(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
-    fmt.Fprintf(w, "hello, %s!\n", ps.ByName("name"))
+func GorillaParams(r *http.Request) map[string]string {
+	var ps interface{}
+	var ok bool
+	var params map[string]string
+	if ps, ok = gorillaContext.GetOk(r, "params"); ok {
+		if params, ok = ps.(map[string]string); ok {
+			return params
+		}
+	}
+	return nil // default implementation returns nil when no parameters are associated with the request
+}
+
+//-----------------------------------------------
+// Custom initializer example - net/context
+//-----------------------------------------------
+
+var netContextLock = new(sync.Mutex)
+var netContextMap = make(map[*http.Request]netContext.Context, 0)
+
+func Context(r *http.Request) netContext.Context {
+	netContextLock.Lock()
+	if ctx, ok := netContextMap[r]; ok {
+		netContextLock.Unlock()
+		return ctx
+	}
+	netContextLock.Unlock()
+	return nil
+}
+
+func SetContext(r *http.Request, ctx netContext.Context) {
+	netContextLock.Lock()
+	if ctx == nil {
+		delete(netContextMap, r)
+	} else {
+		netContextMap[r] = ctx
+	}
+	netContextLock.Unlock()
+}
+
+func NetParams(r *http.Request) map[string]string {
+	ctx := Context(r)
+	if ps := ctx.Value("params"); ps != nil {
+		if params, ok := ps.(map[string]string); ok {
+			return params
+		}
+	}
+	return nil // default implementation returns nil when no parameters are associated with the request
+}
+
+func NetContextInitializer(w http.ResponseWriter, r *http.Request, params map[string]string, next http.Handler) {
+	ctx := netContext.WithValue(netContext.Background(), "params", params)
+	SetContext(r, ctx)
+	defer SetContext(r, nil)
+	next.ServeHTTP(w, r)
+}
+
+//-----------------------------------------------
+// Middleware example
+//-----------------------------------------------
+
+func LogRequest(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func(started time.Time) {
+			log.Printf("%s: %s (%dus)\n", r.Method, r.RequestURI, time.Since(started).Nanoseconds()/1000.0)
+		}(time.Now())
+		next.ServeHTTP(w, r)
+	})
+}
+
+func PerHandlerMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Println("Per Handler Middleware")
+		next.ServeHTTP(w, r)
+	})
+}
+
+func Index(w http.ResponseWriter, r *http.Request) {
+	fmt.Fprint(w, "Welcome!\n")
+}
+
+func Hello(w http.ResponseWriter, r *http.Request) {
+	ps := httprouter.Params(r) // default implementation
+	name := ps["name"]
+	fmt.Fprintf(w, "hello, %s!\n", name)
+}
+
+func useGorillaContext(router *httprouter.Router) {
+	// example: replace the built-in functions with custom store for parameters
+	httprouter.SetParams = GorillaSetParams
+	httprouter.Params = GorillaParams
+}
+
+func useNetContext(router *httprouter.Router) {
+	// example: use net/Context custom initializer
+	router.SetInitializer(NetContextInitializer)
+	// only the default initializer uses SetParams/Params, but can be overridden for convenience
 }
 
 func main() {
-    router := httprouter.New()
-    router.GET("/", Index)
-    router.GET("/hello/:name", Hello)
+	router := httprouter.New()
+	router.GET("/", PerHandlerMiddleware)(Index)
+	router.GET("/hello/:name")(Hello)
 
-    log.Fatal(http.ListenAndServe(":8080", router))
+	router.Use(LogRequest) // router level middleware are only composed when handling the request
+
+	// useGorillaContext(router)
+	// useNetContext(router)
+
+	log.Fatal(http.ListenAndServe(":8080", router))
 }
 ```
 
@@ -226,8 +341,8 @@ func (hs HostSwitch) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func main() {
 	// Initialize a router as usual
 	router := httprouter.New()
-	router.GET("/", Index)
-	router.GET("/hello/:name", Hello)
+	router.GET("/")(Index)
+	router.GET("/hello/:name")(Hello)
 
 	// Make a new HostSwitch and insert the router (our http handler)
 	// for example.com and port 12345
@@ -255,46 +370,48 @@ import (
     "strings"
 )
 
-func BasicAuth(h httprouter.Handle, user, pass []byte) httprouter.Handle {
-	return func(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
-		const basicAuthPrefix string = "Basic "
+func BasicAuth(user, pass []byte) func(http.Handler) http.Handler {
+    return func(next http.Handler) http.Handler {
+    	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			const basicAuthPrefix string = "Basic "
 
-		// Get the Basic Authentication credentials
-		auth := r.Header.Get("Authorization")
-		if strings.HasPrefix(auth, basicAuthPrefix) {
-			// Check credentials
-			payload, err := base64.StdEncoding.DecodeString(auth[len(basicAuthPrefix):])
-			if err == nil {
-				pair := bytes.SplitN(payload, []byte(":"), 2)
-				if len(pair) == 2 && bytes.Equal(pair[0], user) && bytes.Equal(pair[1], pass) {
-					// Delegate request to the given handle
-					h(w, r, ps)
-					return
+			// Get the Basic Authentication credentials
+			auth := r.Header.Get("Authorization")
+			if strings.HasPrefix(auth, basicAuthPrefix) {
+				// Check credentials
+				payload, err := base64.StdEncoding.DecodeString(auth[len(basicAuthPrefix):])
+				if err == nil {
+					pair := bytes.SplitN(payload, []byte(":"), 2)
+					if len(pair) == 2 && bytes.Equal(pair[0], user) && bytes.Equal(pair[1], pass) {
+						// Delegate request to the given handle
+						next.ServeHTTP(w, r)
+						return
+					}
 				}
 			}
-		}
 
-		// Request Basic Authentication otherwise
-		w.Header().Set("WWW-Authenticate", "Basic realm=Restricted")
-		http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
+			// Request Basic Authentication otherwise
+			w.Header().Set("WWW-Authenticate", "Basic realm=Restricted")
+			http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
+    	})
 	}
 }
 
-func Index(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
+func Index(w http.ResponseWriter, r *http.Request) {
     fmt.Fprint(w, "Not protected!\n")
 }
 
-func Protected(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
+func Protected(w http.ResponseWriter, r *http.Request) {
     fmt.Fprint(w, "Protected!\n")
 }
 
 func main() {
     user := []byte("gordon")
     pass := []byte("secret!")
-    
+
     router := httprouter.New()
-    router.GET("/", Index)
-    router.GET("/protected/", BasicAuth(Protected, user, pass))
+    router.GET("/")(Index)
+    router.GET("/protected/", BasicAuth(user, pass))(Protected)
 
     log.Fatal(http.ListenAndServe(":8080", router))
 }
