@@ -6,11 +6,10 @@ type Middleware []func(http.Handler) http.Handler
 
 // NewMiddleware creates a new middleware chain.
 func NewMiddleware(middleware ...func(http.Handler) http.Handler) Middleware {
-	mw := make(Middleware, 0)
 	if middleware == nil || len(middleware) == 0 {
-		return mw
+		return Middleware{}
 	}
-	return append(mw, middleware...)
+	return append(make(Middleware, len(middleware)), middleware...)
 }
 
 // Chains the middleware to the http.Handler endpoint.
