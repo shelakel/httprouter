@@ -4,6 +4,7 @@ import "net/http"
 
 type Middleware []func(http.Handler) http.Handler
 
+// NewMiddleware creates a new middleware chain.
 func NewMiddleware(middleware ...func(http.Handler) http.Handler) Middleware {
 	return append(make(Middleware, len(middleware)), middleware...)
 }

@@ -76,25 +76,14 @@
 //  thirdValue := ps[2].Value // the value of the 3rd parameter
 package httprouter
 
-import (
-	"net/http"
-	"time"
-
-	"golang.org/x/net/context"
-)
-
-// Handle is a function that can be registered to a route to handle HTTP
-// requests. Like http.HandlerFunc, but has a third parameter for the values of
-// wildcards (variables).
-type Handle func(http.ResponseWriter, *http.Request, context.Context)
+import "net/http"
 
 // Router is a http.Handler which can be used to dispatch requests to different
 // handler functions via configurable routes
 type Router struct {
-	trees map[string]*node
-
-	Timeout    time.Duration
+	trees      map[string]*node
 	middleware *Middleware
+	handler    func(w http.ResponseWriter, r *http.Request, params map[string]string, next http.Handler)
 
 	// Enables automatic redirection if the current route can't be matched but a
 	// handler for the path with (without) the trailing slash exists.
@@ -139,6 +128,13 @@ type Router struct {
 	PanicHandler func(http.ResponseWriter, *http.Request, interface{})
 }
 
+func (r *Router) SetHandler(handler func(w http.ResponseWriter, r *http.Request, params map[string]string, next http.Handler)) {
+	if handler == nil {
+		handler = defaultHandler
+	}
+	r.handler = handler
+}
+
 // Make sure the Router conforms with the http.Handler interface
 var _ http.Handler = New()
 
@@ -146,8 +142,8 @@ var _ http.Handler = New()
 // Path auto-correction, including trailing slashes, is enabled by default.
 func New() *Router {
 	return &Router{
-		Timeout:                time.Duration(0),
 		middleware:             &Middleware{},
+		handler:                defaultHandler,
 		RedirectTrailingSlash:  true,
 		RedirectFixedPath:      true,
 		HandleMethodNotAllowed: true,
@@ -262,9 +258,7 @@ func (r *Router) ServeFiles(path string, root http.FileSystem, middleware ...fun
 	fileServer := http.FileServer(root)
 
 	r.GET(path, middleware...)(func(w http.ResponseWriter, req *http.Request) {
-		ctx := Context(req)
-		ps := ctx.Value("params").(map[string]string)
-		req.URL.Path = ps["filepath"]
+		req.URL.Path = Params(req)["filepath"]
 		fileServer.ServeHTTP(w, req)
 	})
 }
@@ -296,22 +290,11 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	if root := r.trees[req.Method]; root != nil {
 		path := req.URL.Path
 
-		if handle, ps, tsr := root.getValue(path); handle != nil {
-			var cancel context.CancelFunc
-			ctx := context.WithValue(context.Background(), "params", ps)
-			if int64(r.Timeout) > 0 {
-				ctx, cancel = context.WithTimeout(ctx, r.Timeout)
+		if next, ps, tsr := root.getValue(path); next != nil {
+			if len(*r.middleware) > 0 {
+				next = r.middleware.Then(next)
 			}
-			SetContext(req, ctx)
-			if len(*r.middleware) == 0 {
-				handle.ServeHTTP(w, req)
-			} else {
-				(*r.middleware).Then(handle).ServeHTTP(w, req)
-			}
-			if cancel != nil {
-				cancel()
-			}
-			unsetContext(req)
+			r.handler(w, req, ps, next)
 			return
 		} else if req.Method != "CONNECT" && path != "/" {
 			code := 301 // Permanent redirect, request with GET method
